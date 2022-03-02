@@ -9,8 +9,7 @@ module.exports = async function (deployer) {
   const _AggregatorV3 = await AggregatorV3.deployed();
 
   await deployer.deploy(
-    pricePrediction, _AggregatorV3.address, accounts[0], accounts[0], 0, 0, 1000000000000000, 300, 1000
-    );
+    pricePrediction, _AggregatorV3.address, accounts[0], accounts[0], 1000000000000000,1000);
 
   const _pricePrediction = await pricePrediction.deployed();
 

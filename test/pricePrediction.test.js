@@ -1,189 +1,104 @@
-const AggregatorV3 = artifacts.require("AggregatorV3");
-const pricePrediction = artifacts.require("pricePrediction");
-
-
-const Intl = require('Intl');
-const nf = Intl.NumberFormat();
+const pricePredictionABI = require('../build/contracts/pricePrediction.json')["abi"];
+const pricePredictionAddress = require('../build/contracts/pricePrediction.json')["networks"]["1"]["address"];
+const pricePredictionContract = new web3.eth.Contract(pricePredictionABI, pricePredictionAddress);
 
 const BN = require('bignumber.js')
 
 require('chai').use(require('chai-bignumber')(BN)).use(require('chai-as-promised')).should();
 
-contract ('', async([deployer, userTest1, userTest2]) => {
+contract ('', async([deployer, userTest1, userTest2, userTest3, userTest4, userTest5]) => {
 
     beforeEach(async ()=> {
-
-        this.AggregatorV3Contract = await AggregatorV3.new('0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419');
-        this.pricePredictionContract = await pricePrediction.new(this.AggregatorV3Contract.address, deployer, deployer, 300, 30, 1000000000000000, 300, 1000);
+        this.betAmount = await web3.utils.toWei('1', 'ether');
     })
 
     describe('', async () => {
         
-        const betAmount = await web3.utils.toWei('1', 'ether');
-
         let currentEpoch;
-        let epochs = [];
+
+        let userTest1Balance;
+        let userTest2Balance;
+
+        let isClaimable;
+        let isRefundable;
+
+        let genesisLockOnce;
+        let genesisStartOnce;
+
+        let getUserRoundsLength;
+        let getOracleCalled;
 
 
         it('Start Gensis' ,async ()=> {
-            /* Lets Start Bet Round A */
 
-            console.log('Lets Start Bet Round A ...')
-            console.log('this.pricePredictionContract address', this.pricePredictionContract.address)
+            userTest1Balance = await web3.eth.getBalance(userTest1);
+            console.log('userTest1Balance : ', userTest1Balance);
 
-            const deployerBalanceBeforeBet = await web3.eth.getBalance(deployer);
-            console.log('deployerBalanceBeforeBet : ', deployerBalanceBeforeBet)
-
-            const userTest1BalanceBeforeBet = await web3.eth.getBalance(userTest1);
-            console.log('userTest1BalanceBeforeBet : ', userTest1BalanceBeforeBet)
+            userTest2Balance = await web3.eth.getBalance(userTest2);
+            console.log('userTest2Balance : ', userTest2Balance);
 
             //Gensis Start Round
-            await this.pricePredictionContract.gensisStartPrediction().should.be.fulfilled;
-            currentEpoch = await this.pricePredictionContract.currentEpoch()
-            console.log('currentEpoch : ' ,currentEpoch.toNumber())
+            console.log('Start Gensis Round ....');
+            await pricePredictionContract.methods.gensisStartPrediction().send({from : deployer , gas: 5000000}).should.be.fulfilled;
+            currentEpoch = await pricePredictionContract.methods.currentEpoch().call();
+            console.log('currentEpoch : ' ,currentEpoch);
+            console.log('Gensis Round Started ....');
 
             //BetBear
-            console.log('Betting Bear')
-            await this.pricePredictionContract.betBearPrediction(Number(currentEpoch), {from : deployer, value : betAmount})
-            .should.be.fulfilled;
-            console.log('Bet Done')
+            console.log(`Bet for epoch ${currentEpoch}`)
+            await pricePredictionContract.methods.betBearPrediction(Number(currentEpoch)).send({from : userTest1 , value: this.betAmount , gas: 5000000});
+            console.log(`Bet done for epoch ${currentEpoch}`)
+
+            userTest1Balance = await web3.eth.getBalance(userTest1);
+            console.log('userTest1Balance after BET : ', userTest1Balance);
 
             //BetBull
-            console.log('Betting Bull')
-            await this.pricePredictionContract.betBullPrediction(Number(currentEpoch), {from : userTest1, value : betAmount})
-            .should.be.fulfilled;
-            console.log('Bet Done')
+            console.log(`Bet for epoch ${currentEpoch}`)
+            await pricePredictionContract.methods.betBullPrediction(Number(currentEpoch)).send({from : userTest2 , value: this.betAmount , gas: 5000000});
+            console.log(`Bet done for epoch ${currentEpoch}`)
 
-            const deployerBalanceAfterBet = await web3.eth.getBalance(deployer);
-            console.log('deployerBalanceAfterBet : ', deployerBalanceAfterBet)
-
-            const userTest1BalanceAfterBet = await web3.eth.getBalance(userTest1);
-            console.log('userTest1BalanceAfterBet : ', userTest1BalanceAfterBet)
-            
             //Gnesis Lock Round
-            console.log('locking Gensis Round ....')
-            await this.pricePredictionContract.gensisLockRound().should.be.fulfilled;
-            console.log('Gensis Round Locked ....')
-
-            const oldLockedPrice = await this.pricePredictionContract.getLockPrice(Number(currentEpoch));
-            console.log('oldLockedPrice : ', oldLockedPrice.toNumber());
-
-            await this.pricePredictionContract.changeLockPrice(Number(currentEpoch), 375506000000).should.be.fulfilled;
-
-            const newLockedPrice = await this.pricePredictionContract.getLockPrice(Number(currentEpoch));
-            console.log('newLockedPrice : ', newLockedPrice.toNumber());
+            console.log('locking Gensis Round ....');
+            await pricePredictionContract.methods.gensisLockRound().send({from : deployer , gas: 500000}).should.be.fulfilled;;
+            currentEpoch = await pricePredictionContract.methods.currentEpoch().call();
+            console.log('currentEpoch : ' ,currentEpoch);
+            console.log('Gensis Round Locked ....');
 
             //Execute Round
-            console.log('Executing ....')
-            await this.pricePredictionContract.executeRound().should.be.fulfilled;
-            console.log('Execute Done ....')
+            console.log(`Executing for ${currentEpoch}`)
+            await pricePredictionContract.methods.executeRound().send({from : deployer , gas: 500000});
+            currentEpoch = await pricePredictionContract.methods.currentEpoch().call();
+            console.log(`Executing done for ${currentEpoch}`)
 
-            //Claim Reward
-            console.log('Claiming ....')
+            //Claim Reward for userTest1
+            console.log('Claiming ....');
+            let finalEpochsForuserTest1 = [];
 
-            epochs = [Number(currentEpoch)]
+            getUserRoundsLength = await pricePredictionContract.methods.getUserRoundsLength(userTest1).call();
+            console.log('getUserRoundsLength userTest1 : ', getUserRoundsLength);
 
-            for (let i = 0 ; i < epochs.length; i++){
-                const isClaimableA1 = await this.pricePredictionContract.isClaimable(epochs[i], deployer);
-                const isRefundableA1 = await this.pricePredictionContract.isRefundable(epochs[i], deployer);
+            for(let i = 0; i < getUserRoundsLength ; i++){
 
-                if(isClaimableA1 || isRefundableA1){
-                    await this.pricePredictionContract.claimReward(epochs, {from : deployer}).should.be.fulfilled;
+                let selectEpoch =  await pricePredictionContract.methods.userRounds(userTest1, i).call();
+
+                getOracleCalled = await pricePredictionContract.methods.getOracleCalled(selectEpoch).call();
+                console.log(`getOracleCalled for ${selectEpoch}`, getOracleCalled);
+
+                isClaimable = await pricePredictionContract.methods.isClaimable(selectEpoch, userTest1).call();
+
+                isRefundable = await pricePredictionContract.methods.isRefundable(selectEpoch, userTest1).call();
+
+                if(isClaimable || isRefundable){
+                    finalEpochsForuserTest1.push(selectEpoch);
                 }
             }
 
-            for (let i = 0 ; i < epochs.length; i++){
-                const isClaimableA2 = await this.pricePredictionContract.isClaimable(epochs[i], userTest1);
-                const isRefundableA2 = await this.pricePredictionContract.isRefundable(epochs[i], userTest1);
+            console.log('finalEpochs userTest1 : ', finalEpochsForuserTest1);
 
-                if(isClaimableA2 || isRefundableA2){
-                    await this.pricePredictionContract.claimReward(epochs, {from : userTest1}).should.be.fulfilled;
-                }
-            }
+            await pricePredictionContract.methods.claimReward(finalEpochsForuserTest1).send({from : userTest1 , gas: 500000});
 
-            const deployerBalanceAfterClaim = await web3.eth.getBalance(deployer);
-            console.log('deployerBalanceAfterClaim : ', deployerBalanceAfterClaim)
-
-            const userTest1BalanceAfterClaim = await web3.eth.getBalance(userTest1);
-            console.log('userTest1BalanceAfterClaim : ', userTest1BalanceAfterClaim)
-
-            console.log('Claim Done ....')
-
-            console.log('Lets Close Bet Round A ...')
-
-            /* ****************** */
-
-            it('Start Next Round', async() => {
-
-            /* Lets Start Bet Round B */
-
-            console.log('Lets Start Bet Round B ...')
-
-            currentEpoch = await this.pricePredictionContract.currentEpoch()
-            console.log('currentEpoch : ' ,currentEpoch.toNumber())
-
-            //BetBear
-            console.log('Betting Bear')
-            await this.pricePredictionContract.betBearPrediction(Number(currentEpoch), {from : deployer, value : betAmount})
-            .should.be.fulfilled;
-            console.log('Bet Done')
-
-            //BetBull
-            console.log('Betting Bull')
-            await this.pricePredictionContract.betBullPrediction(Number(currentEpoch), {from : userTest1, value : betAmount})
-            .should.be.fulfilled;
-            console.log('Bet Done')
-
-            const deployerBalanceAfterBetB = await web3.eth.getBalance(deployer);
-            console.log('deployerBalanceAfterBetB : ', deployerBalanceAfterBetB)
-
-            const userTest1BalanceAfterBetB = await web3.eth.getBalance(userTest1);
-            console.log('userTest1BalanceAfterBetB : ', userTest1BalanceAfterBetB)
-
-            await this.pricePredictionContract.changeLockPrice(Number(currentEpoch), 375506000000).should.be.fulfilled;
-
-            const newLockedPriceB = await this.pricePredictionContract.getLockPrice(Number(currentEpoch));
-            console.log('newLockedPriceB : ', newLockedPriceB.toNumber());
-
-            //Execute Round
-            console.log('Executing ....')
-            await this.pricePredictionContract.executeRound().should.be.fulfilled;
-            console.log('Execute Done ....')
-
-            //Claim Reward
-            console.log('Claiming ....')
-
-            epochs = [Number(currentEpoch)]
-
-            for (let i = 0 ; i < epochs.length; i++){
-                const isClaimableB1 = await this.pricePredictionContract.isClaimable(epochs[i], deployer);
-                const isRefundableB1 = await this.pricePredictionContract.isRefundable(epochs[i], deployer);
-
-                if(isClaimableB1 || isRefundableB1){
-                    await this.pricePredictionContract.claimReward(epochs, {from : deployer}).should.be.fulfilled;
-                }
-            }
-
-            for (let i = 0 ; i < epochs.length; i++){
-                const isClaimableB2 = await this.pricePredictionContract.isClaimable(epochs[i], userTest1);
-                const isRefundableB2 = await this.pricePredictionContract.isRefundable(epochs[i], userTest1);
-
-                if(isClaimableB2 || isRefundableB2){
-                    await this.pricePredictionContract.claimReward(epochs, {from : userTest1}).should.be.fulfilled;
-                }
-            }
-
-            const deployerBalanceAfterClaimB = await web3.eth.getBalance(deployer);
-            console.log('deployerBalanceAfterClaimB : ', deployerBalanceAfterClaimB)
-
-            const userTest1BalanceAfterClaimB = await web3.eth.getBalance(userTest1);
-            console.log('userTest1BalanceAfterClaimB : ', userTest1BalanceAfterClaimB)
-
-            console.log('Claim Done ....')
-
-            console.log('Lets Close Bet Round B ...')
-
-            })
+            userTest1Balance = await web3.eth.getBalance(userTest1);
+            console.log('userTest1Balance : ', userTest1Balance);
 
         })
 

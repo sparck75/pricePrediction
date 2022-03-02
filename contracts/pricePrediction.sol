@@ -34,22 +34,17 @@ contract pricePrediction is Ownable, Pausable, ReentrancyGuard {
     bool public genesisLockOnce = false;
     bool public genesisStartOnce = false;
 
-    address public adminAddress; // address of the admin
-    address public operatorAddress; // address of the operator
+    address public adminAddress; 
+    address public operatorAddress; 
 
-    uint256 public bufferSeconds; // number of seconds for valid execution of a prediction round
-    uint256 public intervalSeconds; // interval in seconds between two prediction rounds
+    uint256 public minBetAmount;
+    uint256 public treasuryFee;
+    uint256 public treasuryAmount;
 
-    uint256 public minBetAmount; // minimum betting amount (denominated in wei)
-    uint256 public treasuryFee; // treasury rate (e.g. 200 = 2%, 150 = 1.50%)
-    uint256 public treasuryAmount; // treasury amount that was not claimed
+    uint256 public currentEpoch;
+    uint256 public oracleLatestRoundId;
 
-    uint256 public currentEpoch; // current epoch for prediction round
-
-    uint256 public oracleLatestRoundId; // converted from uint80 (Chainlink)
-    uint256 public oracleUpdateAllowance; // seconds
-
-    uint256 public constant MAX_TREASURY_FEE = 1000; // 10%
+    uint256 public constant MAX_TREASURY_FEE = 1000;
 
     mapping(uint256 => mapping(address => BetInfo)) public ledger;
     mapping(uint256 => Round) public rounds;
@@ -131,25 +126,11 @@ contract pricePrediction is Ownable, Pausable, ReentrancyGuard {
         _;
     }
 
-    /**
-     * @notice Constructor
-     * @param _oracleAddress: oracle address
-     * @param _adminAddress: admin address
-     * @param _operatorAddress: operator address
-     * @param _intervalSeconds: number of time within an interval
-     * @param _bufferSeconds: buffer of time for resolution of price
-     * @param _minBetAmount: minimum bet amounts (in wei)
-     * @param _oracleUpdateAllowance: oracle update allowance
-     * @param _treasuryFee: treasury fee (1000 = 10%)
-     */
     constructor(
         address _oracleAddress,
         address _adminAddress,
         address _operatorAddress,
-        uint256 _intervalSeconds,
-        uint256 _bufferSeconds,
         uint256 _minBetAmount,
-        uint256 _oracleUpdateAllowance,
         uint256 _treasuryFee
     ) {
         require(_treasuryFee <= MAX_TREASURY_FEE, "Treasury fee too high");
@@ -157,22 +138,8 @@ contract pricePrediction is Ownable, Pausable, ReentrancyGuard {
         oracle = AggregatorV3Interface(_oracleAddress);
         adminAddress = _adminAddress;
         operatorAddress = _operatorAddress;
-        intervalSeconds = _intervalSeconds;
-        bufferSeconds = _bufferSeconds;
         minBetAmount = _minBetAmount;
-        oracleUpdateAllowance = _oracleUpdateAllowance;
         treasuryFee = _treasuryFee;
-    }
-
-    function changeLockPrice(uint256 _epoch, int256 _newPrice) external {
-
-        Round storage round = rounds[_epoch];
-        round.lockPrice = _newPrice;
-    }
-
-    function getLockPrice(uint256 _epoch) external view returns(int256){
-        Round storage round = rounds[_epoch];
-        return round.lockPrice;
     }
 
     function gensisStartPrediction() external whenNotPaused onlyOperator {
@@ -186,8 +153,8 @@ contract pricePrediction is Ownable, Pausable, ReentrancyGuard {
     function _startNewRound(uint256 _epoch) internal {
         Round storage round = rounds[_epoch];
         round.startTimestamp = block.timestamp;
-        round.lockTimestamp = block.timestamp + intervalSeconds;
-        round.closeTimestamp = block.timestamp + (2 * intervalSeconds);
+        round.lockTimestamp = block.timestamp;
+        round.closeTimestamp = block.timestamp;
         round.epoch = _epoch;
         round.totalAmount = 0;
 
@@ -196,11 +163,6 @@ contract pricePrediction is Ownable, Pausable, ReentrancyGuard {
 
     function _safeStartRound(uint256 _epoch) internal {
         require(genesisStartOnce, "Can only run after genesisStartRound is triggered");
-        require(rounds[_epoch - 2].closeTimestamp != 0, "Can only start round after round n-2 has ended");
-        require(
-            block.timestamp >= rounds[_epoch - 2].closeTimestamp,
-            "Can only start new round after round n-2 closeTimestamp"
-        );
         _startNewRound(_epoch);
     }
 
@@ -247,10 +209,6 @@ contract pricePrediction is Ownable, Pausable, ReentrancyGuard {
         rounds[_epoch].startTimestamp != 0 
         &&
         rounds[_epoch].lockTimestamp != 0 ;
-        // &&
-        // block.timestamp > rounds[_epoch].startTimestamp
-        // &&
-        // block.timestamp < rounds[_epoch].lockTimestamp;
     }
     
     function gensisLockRound() external whenNotPaused onlyOperator {
@@ -260,6 +218,7 @@ contract pricePrediction is Ownable, Pausable, ReentrancyGuard {
         (uint80 currentRoundId, int256 currentPrice) = _getPriceFromOracle();
 
         oracleLatestRoundId = uint256(currentRoundId);
+
         _safeLockRound(currentEpoch, currentRoundId, currentPrice);
 
         currentEpoch = currentEpoch + 1;
@@ -268,12 +227,14 @@ contract pricePrediction is Ownable, Pausable, ReentrancyGuard {
     }
 
     function executeRound() external whenNotPaused onlyOperator {
-        require(genesisStartOnce && genesisLockOnce , 
-        'Can only run after genesisStartRound and genesisLockRound is triggered'
+
+        require(
+            genesisStartOnce && genesisLockOnce,
+            "Can only run after genesisStartRound and genesisLockRound is triggered"
         );
 
         (uint80 currentRoundId, int256 currentPrice) = _getPriceFromOracle();
-        
+
         oracleLatestRoundId = uint256(currentRoundId);
 
         _safeLockRound(currentEpoch, currentRoundId, currentPrice);
@@ -281,42 +242,33 @@ contract pricePrediction is Ownable, Pausable, ReentrancyGuard {
         _calculateRewards(currentEpoch - 1);
 
         currentEpoch = currentEpoch + 1;
+        _safeStartRound(currentEpoch);
 
     }
 
-    function _safeLockRound(uint256 _epoch, uint256 _roundId, int256 _price) internal {
+    function _safeLockRound(uint256 _epoch, uint256 _roundId, int256 _currentPrice) internal {
         require(rounds[_epoch].startTimestamp !=0 , 'Can only lock round after round has started');
-        // require(block.timestamp >= rounds[_epoch].lockTimestamp , 'Can only lock round after lockTimestamp');
-        // require(block.timestamp <= rounds[_epoch].lockTimestamp + bufferSeconds , 
-        // 'Can only lock round within bufferSeconds'
-        // );
         Round storage round = rounds[_epoch];
-        round.closeTimestamp = block.timestamp + intervalSeconds;
-        round.lockPrice = _price;
+        round.closeTimestamp = block.timestamp;
+        round.lockPrice = 3;
         round.lockOracleId = _roundId;
 
         emit LockRound(_epoch, _roundId, round.lockPrice);
     }
 
-    function _safeEndRound(uint256 _epoch, uint256 _roundId, int256 _price) internal {
+    function _safeEndRound(uint256 _epoch, uint256 _roundId, int256 _currentPrice) internal {
         require(rounds[_epoch].startTimestamp !=0 , 'Can only lock round after round has started');
-        // require(block.timestamp >= rounds[_epoch].closeTimestamp , 'Can only end round after lockTimestamp');
-        // require(block.timestamp <= rounds[_epoch].closeTimestamp + bufferSeconds , 
-        // 'Can only end round within bufferSeconds'
-        // );
-
+        
         Round storage round = rounds[_epoch];
-        round.closePrice = _price;
+        round.closePrice = 2;
         round.closeOracleId = _roundId;
         round.oracleCalled = true;
-        
+
         emit EndRound(_epoch, _roundId, round.closePrice);
     }
 
     function _calculateRewards(uint256 _epoch) internal {
-        require(rounds[_epoch].rewardBaseCalAmount == 0 && rounds[_epoch].rewardAmount == 0, 
-        "Rewards calculated");
-
+        require(rounds[_epoch].rewardBaseCalAmount == 0 && rounds[_epoch].rewardAmount == 0, "Rewards calculated");
         Round storage round = rounds[_epoch];
         uint256 rewardBaseCalAmount;
         uint256 treasuryAmt;
@@ -353,32 +305,28 @@ contract pricePrediction is Ownable, Pausable, ReentrancyGuard {
     function claimReward(uint256[] calldata _epochs) external nonReentrant notContract {
         uint256 reward;
 
-        for(uint256 i; i < _epochs.length; i++){
+        for (uint256 i = 0; i < _epochs.length; i++) {
             require(rounds[_epochs[i]].startTimestamp != 0, "Round has not started");
-            // require(block.timestamp > rounds[_epochs[i]].closeTimestamp, "Round has not ended");
 
             uint256 addedReward = 0;
 
-            if(rounds[_epochs[i]].oracleCalled){
-                
-                require(isClaimable(_epochs[i], msg.sender), 'Not eligible for claim');
+            if (rounds[_epochs[i]].oracleCalled) {
+                require(isClaimable(_epochs[i], msg.sender), "Not eligible for claim");
                 Round memory round = rounds[_epochs[i]];
                 addedReward = (ledger[_epochs[i]][msg.sender].amount * round.rewardAmount) / round.rewardBaseCalAmount;
-
-            }else{
-
+            }
+            else {
                 require(isRefundable(_epochs[i], msg.sender), "Not eligible for refund");
                 addedReward = ledger[_epochs[i]][msg.sender].amount;
-
             }
-            
+
             ledger[_epochs[i]][msg.sender].claimed = true;
             reward += addedReward;
 
             emit Claim(msg.sender, _epochs[i], addedReward);
         }
 
-        if(reward > 0){
+        if (reward > 0) {
             _safeTransferBNB(address(msg.sender), reward);
         }
     }
@@ -386,6 +334,12 @@ contract pricePrediction is Ownable, Pausable, ReentrancyGuard {
     function _safeTransferBNB(address to, uint256 value) internal {
         (bool success, ) = to.call{value: value}("");
         require(success, "TransferHelper: BNB_TRANSFER_FAILED");
+    }
+
+
+    function getOracleCalled(uint256 _epoch) external view returns(bool){
+                Round memory round = rounds[_epoch];
+                return round.oracleCalled;
     }
 
 
@@ -409,18 +363,16 @@ contract pricePrediction is Ownable, Pausable, ReentrancyGuard {
         return
             !round.oracleCalled &&
             !betInfo.claimed &&
-            // block.timestamp > round.closeTimestamp + bufferSeconds &&
             betInfo.amount != 0;
     }
 
     function _getPriceFromOracle() internal view returns (uint80, int256){
-        // uint256 leastTimeStampToGetNewPrice = block.timestamp + oracleUpdateAllowance;
-        (uint80 roundId, int256 price, , uint256 timestamp, ) = oracle.getLatestPrice();
-        // require(timestamp <= leastTimeStampToGetNewPrice, 'Oracle update exceeded max timestamp allowance');
-        // require(uint256(roundId) > oracleLatestRoundId,
-        //     "Oracle update roundId must be larger than oracleLatestRoundId"
-        // );
+        (uint80 roundId, int256 price, , , ) = oracle.getLatestPrice();
         return (roundId, price);
+    }
+
+    function getUserRoundsLength(address user) external view returns (uint256) {
+        return userRounds[user].length;
     }
 
     function _isContract(address account) internal view returns (bool) {
