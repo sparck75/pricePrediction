@@ -167,7 +167,7 @@ contract pricePrediction is Ownable, Pausable, ReentrancyGuard {
     }
 
     function betBearPrediction(uint256 _epoch) external payable whenNotPaused nonReentrant notContract {
-        require(_epoch == currentEpoch , 'your epoch is invalid');
+        require(_epoch == currentEpoch-1 , 'your epoch is invalid');
         require(epochIsBettable(_epoch), 'your epoch is not bettable');
         require(msg.value >= minBetAmount, 'bet amount must be greater');
         require(ledger[_epoch][msg.sender].amount == 0, 'you can only bet once');
@@ -186,7 +186,7 @@ contract pricePrediction is Ownable, Pausable, ReentrancyGuard {
     }
 
     function betBullPrediction(uint256 _epoch) external payable whenNotPaused nonReentrant notContract {
-        require(_epoch == currentEpoch , 'your epoch is invalid');
+        require(_epoch == currentEpoch-1 , 'your epoch is invalid');
         require(epochIsBettable(_epoch), 'your epoch is not bettable');
         require(msg.value >= minBetAmount, 'bet amount must be greater');
         require(ledger[_epoch][msg.sender].amount == 0, 'you can only bet once');
